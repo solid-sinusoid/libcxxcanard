@@ -72,13 +72,11 @@ int G4CAN::write_frame(const CanardTxQueueItem* ti) {
     TxHeader.TxEventFifoControl = FDCAN_STORE_TX_EVENTS;
     TxHeader.MessageMarker = 0x0;
 
-    // all mailboxes should be free -
-    // https://forum.opencyphal.org/t/uavcan-v0-found-data-transfer-reversal/1476/6
-    // "Reduce the number of enqueued frames to 1" - fix to inner priority inversion
-    for (int i = 0; HAL_FDCAN_GetTxFifoFreeLevel(handler) != 3 && i < 3; i++) {
-        delay_cycles(ONE_FULL_FRAME_CYCLES);
-    }  // wait for message to transmit
-    if (HAL_FDCAN_GetTxFifoFreeLevel(handler) != 3) {
+    // Queue mode orders pending frames by CAN identifier.  Do not wait until
+    // every hardware slot is empty: a low-priority state frame may otherwise
+    // indefinitely prevent a high-priority FOC APPLIED status from entering
+    // the controller on a saturated bus.
+    if (HAL_FDCAN_GetTxFifoFreeLevel(handler) == 0U) {
         return -1;
     }
 
