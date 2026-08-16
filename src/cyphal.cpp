@@ -327,12 +327,7 @@ size_t G4CAN::dlc_to_len(uint32_t dlc) {
 
 void G4CAN::can_loop(bool no_tx) {
     uint32_t fifo_fill_level = HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0);
-    // Process only the FIFO snapshot taken at entry.  Draining until the FIFO
-    // becomes empty can starve the application forever on a busy bus: new
-    // broadcast frames may arrive faster than they are decoded, preventing
-    // in_loop_reporting() from publishing FOC APPLIED acknowledgements.
-    while (fifo_fill_level != 0U) {
-        --fifo_fill_level;
+    while (fifo_fill_level != 0) {
         CanardFrame frame;
         uint8_t RxData[64] = {};
         bool has_read = read_frame(&frame, static_cast<void*>(RxData));
