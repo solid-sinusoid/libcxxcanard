@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "FDCAN_generic.h"
+#include "rx_priority.hpp"
 
 uint32_t G4CAN::len_to_dlc(size_t len) {
     return CanardFDCANLengthToDLC[len];
@@ -13,18 +14,25 @@ size_t G4CAN::dlc_to_len(uint32_t dlc) {
 }
 
 void G4CAN::can_loop(bool no_tx) {
-    uint32_t fifo_fill_level = HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0);
-    // Process only the FIFO snapshot taken at entry. Draining until empty
-    // never returns on a saturated bus because new broadcasts keep arriving;
-    // the application then cannot publish the FOC APPLIED acknowledgement.
-    while (fifo_fill_level != 0U) {
-        --fifo_fill_level;
-        CanardFrame frame;
-        uint8_t RxData[64] = {};
-        bool has_read = read_frame(&frame, static_cast<void*>(RxData));
-        if (!has_read)
-            break;
-        process_canard_rx(&frame);
+    const auto drain_fifo_snapshot = [this](const uint32_t fifo) {
+        uint32_t fifo_fill_level = HAL_FDCAN_GetRxFifoFillLevel(handler, fifo);
+        // Process only the FIFO snapshot taken at entry. Draining until empty
+        // never returns on a saturated bus because new broadcasts keep arriving;
+        // the application then cannot publish the FOC APPLIED acknowledgement.
+        while (fifo_fill_level != 0U) {
+            --fifo_fill_level;
+            CanardFrame frame;
+            uint8_t RxData[64] = {};
+            if (!read_frame_from_fifo(&frame, static_cast<void*>(RxData), fifo)) {
+                break;
+            }
+            process_canard_rx(&frame);
+        }
+    };
+
+    for (const auto fifo : cyphal::fdcan::receive_fifo_priority()) {
+        drain_fifo_snapshot(
+            fifo == cyphal::fdcan::ReceiveFifo::Critical ? FDCAN_RX_FIFO1 : FDCAN_RX_FIFO0);
     }
 
     if (!no_tx) {
@@ -39,22 +47,25 @@ void G4CAN::can_loop(bool no_tx) {
 }
 
 bool G4CAN::read_frame(CanardFrame* rxf, void* data) {
-    uint8_t* RxData = static_cast<uint8_t*>(data);
-    // may want to check 2 FIFOs in the future
-    uint32_t rx_fifo = -1;
-    if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0)) {
-        rx_fifo = FDCAN_RX_FIFO0;
-    } else if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO1)) {
-        rx_fifo = FDCAN_RX_FIFO1;
+    if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO1)) {
+        return read_frame_from_fifo(rxf, data, FDCAN_RX_FIFO1);
     }
+    if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0)) {
+        return read_frame_from_fifo(rxf, data, FDCAN_RX_FIFO0);
+    }
+    return false;
+}
 
-    if (rx_fifo == (uint32_t)-1) {
+bool G4CAN::read_frame_from_fifo(CanardFrame* rxf, void* data, const uint32_t fifo) {
+    uint8_t* RxData = static_cast<uint8_t*>(data);
+    if (HAL_FDCAN_GetRxFifoFillLevel(handler, fifo) == 0U) {
         return false;
     }
 
     FDCAN_RxHeaderTypeDef RxHeader = {};
-    if (HAL_FDCAN_GetRxMessage(handler, rx_fifo, &RxHeader, RxData) != HAL_OK) {
+    if (HAL_FDCAN_GetRxMessage(handler, fifo, &RxHeader, RxData) != HAL_OK) {
         utilities.error_handler();
+        return false;
     }
 
     rxf->extended_can_id = RxHeader.Identifier;
@@ -90,12 +101,16 @@ int G4CAN::write_frame(const CanardTxQueueItem* ti) {
     return TxHeader.DataLength;
 }
 
-HAL_StatusTypeDef apply_filter(uint32_t filter_index, G4CAN::Handler hfdcan, const CanardFilter& filter) {
+HAL_StatusTypeDef apply_filter(
+    uint32_t filter_index,
+    G4CAN::Handler hfdcan,
+    const CanardFilter& filter,
+    const uint32_t destination_fifo) {
     FDCAN_FilterTypeDef hw_filter;
     hw_filter.IdType = FDCAN_EXTENDED_ID;
     hw_filter.FilterIndex = filter_index;
     hw_filter.FilterType = FDCAN_FILTER_MASK;
-    hw_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+    hw_filter.FilterConfig = destination_fifo;
     hw_filter.FilterID1 = filter.extended_can_id;
     hw_filter.FilterID2 = filter.extended_mask;
     return HAL_FDCAN_ConfigFilter(hfdcan, &hw_filter);

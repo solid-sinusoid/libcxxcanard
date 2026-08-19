@@ -16,6 +16,7 @@ public:
 
 private:
     FDCAN_HandleTypeDef* handler;
+    bool read_frame_from_fifo(CanardFrame* frame, void* data, uint32_t fifo);
     G4CAN(Handler handler, size_t queue_len, const UtilityConfig& utilities)
         : AbstractCANProvider(CANARD_MTU_CAN_FD, 72, queue_len, utilities), handler(handler){};
 
@@ -75,6 +76,10 @@ public:
     int write_frame(const CanardTxQueueItem* ti) override;
 };
 
-HAL_StatusTypeDef apply_filter(uint32_t filter_index, G4CAN::Handler hfdcan, const CanardFilter& filter);
+HAL_StatusTypeDef apply_filter(
+    uint32_t filter_index,
+    G4CAN::Handler hfdcan,
+    const CanardFilter& filter,
+    uint32_t destination_fifo = FDCAN_FILTER_TO_RXFIFO0);
 
 #endif
