@@ -14,8 +14,11 @@ size_t G4CAN::dlc_to_len(uint32_t dlc) {
 }
 
 void G4CAN::can_loop(bool no_tx) {
-    const auto drain_fifo_snapshot = [this](const uint32_t fifo) {
+    const auto drain_fifo_snapshot = [this](const uint32_t fifo, const std::size_t budget) {
         uint32_t fifo_fill_level = HAL_FDCAN_GetRxFifoFillLevel(handler, fifo);
+        if (fifo_fill_level > budget) {
+            fifo_fill_level = static_cast<uint32_t>(budget);
+        }
         // Process only the FIFO snapshot taken at entry. Draining until empty
         // never returns on a saturated bus because new broadcasts keep arriving;
         // the application then cannot publish the FOC APPLIED acknowledgement.
@@ -32,7 +35,8 @@ void G4CAN::can_loop(bool no_tx) {
 
     for (const auto fifo : cyphal::fdcan::receive_fifo_priority()) {
         drain_fifo_snapshot(
-            fifo == cyphal::fdcan::ReceiveFifo::Critical ? FDCAN_RX_FIFO1 : FDCAN_RX_FIFO0);
+            fifo == cyphal::fdcan::ReceiveFifo::Critical ? FDCAN_RX_FIFO1 : FDCAN_RX_FIFO0,
+            cyphal::fdcan::maximum_frames_per_pass(fifo));
     }
 
     if (!no_tx) {
