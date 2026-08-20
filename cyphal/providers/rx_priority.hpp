@@ -18,13 +18,13 @@ constexpr std::array<ReceiveFifo, 2> receive_fifo_priority()
     return {ReceiveFifo::Critical, ReceiveFifo::Regular};
 }
 
-// The application publishes the synchronized-command acknowledgement after
-// each CAN provider pass.  Keep that latency bounded even if a small hardware
-// FIFO already contains a burst of accepted frames: consuming a whole FIFO in
-// one pass can otherwise postpone STAGED behind repeated command retries.
+// FOC command and SYNC share the three-frame critical hardware FIFO.  Drain
+// that bounded FIFO in one provider pass so that a control tick cannot lose a
+// command or its matching SYNC while register traffic is being serviced.
+// Keep the regular FIFO budget at one frame to retain bounded telemetry work.
 constexpr std::size_t maximum_frames_per_pass(const ReceiveFifo fifo)
 {
-    return fifo == ReceiveFifo::Critical ? 1U : 1U;
+    return fifo == ReceiveFifo::Critical ? 3U : 1U;
 }
 
 }  // namespace cyphal::fdcan
