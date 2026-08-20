@@ -4,6 +4,7 @@
 
 #include "FDCAN_generic.h"
 #include "rx_priority.hpp"
+#include "tx_event_policy.hpp"
 
 uint32_t G4CAN::len_to_dlc(size_t len) {
     return CanardFDCANLengthToDLC[len];
@@ -88,7 +89,8 @@ int G4CAN::write_frame(const CanardTxQueueItem* ti) {
     TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     TxHeader.BitRateSwitch = FDCAN_BRS_ON;
     TxHeader.FDFormat = FDCAN_FD_CAN;
-    TxHeader.TxEventFifoControl = FDCAN_STORE_TX_EVENTS;
+    TxHeader.TxEventFifoControl =
+        cyphal::fdcan::store_tx_events() ? FDCAN_STORE_TX_EVENTS : FDCAN_NO_TX_EVENTS;
     TxHeader.MessageMarker = 0x0;
 
     // Queue mode orders pending frames by CAN identifier.  Do not wait until
