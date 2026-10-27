@@ -318,6 +318,7 @@ void AbstractCANProvider::clear_queue() {
 
 AbstractCANProvider::~AbstractCANProvider() = default;
 #if (defined(STM32G) || defined(STM32G4) || defined(STM32G0)) && defined(HAL_FDCAN_MODULE_ENABLED)
+#include <algorithm>
 #include <cstring>
 
 
@@ -336,15 +337,18 @@ void G4CAN::can_loop(bool no_tx) {
 }
 
 void G4CAN::process_canard_rx(bool all) {
-    uint32_t fifo_fill_level = HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0);
-    while (fifo_fill_level != 0) {
-        CanardFrame frame;
-        uint8_t RxData[64] = {};
-        bool has_read = read_frame(&frame, static_cast<void*>(RxData));
-        if (!has_read)
-            break;
-        accept_rx_frame(frame);
-        if (!all) break;
+    // Drain the critical three-frame snapshot first, then one regular frame;
+    // a continuously replenished bus must not starve the application loop.
+    for (const uint32_t fifo : {FDCAN_RX_FIFO1, FDCAN_RX_FIFO0}) {
+        const uint32_t budget = all && fifo == FDCAN_RX_FIFO1 ? 3U : 1U;
+        const auto pending = std::min(HAL_FDCAN_GetRxFifoFillLevel(handler, fifo), budget);
+        for (uint32_t count = 0; count < pending; ++count) {
+            CanardFrame frame;
+            uint8_t data[64] = {};
+            if (!read_frame_from_fifo(&frame, data, fifo)) break;
+            accept_rx_frame(frame);
+            if (!all) return;
+        }
     }
 }
 
@@ -357,22 +361,25 @@ void G4CAN::update_fdcan_status() {
 }
 
 bool G4CAN::read_frame(CanardFrame* rxf, void* data) {
-    uint8_t* RxData = static_cast<uint8_t*>(data);
-    // may want to check 2 FIFOs in the future
-    uint32_t rx_fifo = -1;
-    if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0)) {
-        rx_fifo = FDCAN_RX_FIFO0;
-    } else if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO1)) {
-        rx_fifo = FDCAN_RX_FIFO1;
+    if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO1)) {
+        return read_frame_from_fifo(rxf, data, FDCAN_RX_FIFO1);
     }
+    if (HAL_FDCAN_GetRxFifoFillLevel(handler, FDCAN_RX_FIFO0)) {
+        return read_frame_from_fifo(rxf, data, FDCAN_RX_FIFO0);
+    }
+    return false;
+}
 
-    if (rx_fifo == (uint32_t)-1) {
+bool G4CAN::read_frame_from_fifo(CanardFrame* rxf, void* data, const uint32_t fifo) {
+    uint8_t* RxData = static_cast<uint8_t*>(data);
+    if (HAL_FDCAN_GetRxFifoFillLevel(handler, fifo) == 0U) {
         return false;
     }
 
     FDCAN_RxHeaderTypeDef RxHeader = {};
-    if (HAL_FDCAN_GetRxMessage(handler, rx_fifo, &RxHeader, RxData) != HAL_OK) {
+    if (HAL_FDCAN_GetRxMessage(handler, fifo, &RxHeader, RxData) != HAL_OK) {
         utilities.error_handler();
+        return false;
     }
 
     rxf->extended_can_id = RxHeader.Identifier;
@@ -391,14 +398,14 @@ int G4CAN::write_frame(const CanardTxQueueItem* ti) {
     TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     TxHeader.BitRateSwitch = FDCAN_BRS_ON;
     TxHeader.FDFormat = FDCAN_FD_CAN;
-    TxHeader.TxEventFifoControl = FDCAN_STORE_TX_EVENTS;
+    TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     TxHeader.MessageMarker = 0x0;
 
-    // all mailboxes should be free -
-    // https://forum.opencyphal.org/t/uavcan-v0-found-data-transfer-reversal/1476/6
-    // "Reduce the number of enqueued frames to 1" - fix to inner priority inversion
-    // Non-blocking: the next main-loop pass retries the queued frame.
-    if (HAL_FDCAN_GetTxFifoFreeLevel(handler) != 3) {
+    // Queue mode orders pending frames by CAN identifier.  Do not wait until
+    // every hardware slot is empty: a low-priority state frame may otherwise
+    // indefinitely prevent a high-priority FOC APPLIED status from entering
+    // the controller on a saturated bus.
+    if (HAL_FDCAN_GetTxFifoFreeLevel(handler) == 0U) {
         return -1;
     }
 
@@ -408,12 +415,16 @@ int G4CAN::write_frame(const CanardTxQueueItem* ti) {
     return TxHeader.DataLength;
 }
 
-HAL_StatusTypeDef apply_filter(uint32_t filter_index, G4CAN::Handler hfdcan, const CanardFilter& filter) {
+HAL_StatusTypeDef apply_filter(
+    uint32_t filter_index,
+    G4CAN::Handler hfdcan,
+    const CanardFilter& filter,
+    const uint32_t destination_fifo) {
     FDCAN_FilterTypeDef hw_filter;
     hw_filter.IdType = FDCAN_EXTENDED_ID;
     hw_filter.FilterIndex = filter_index;
     hw_filter.FilterType = FDCAN_FILTER_MASK;
-    hw_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+    hw_filter.FilterConfig = destination_fifo;
     hw_filter.FilterID1 = filter.extended_can_id;
     hw_filter.FilterID2 = filter.extended_mask;
     return HAL_FDCAN_ConfigFilter(hfdcan, &hw_filter);
