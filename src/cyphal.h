@@ -1079,6 +1079,10 @@ class NodeInfoReader : public AbstractSubscription<NodeInfoRequest> {
 private:
     NodeInfoResponse node_info;
 public:
+    void set_image_crc(uint64_t crc) {
+        node_info.software_image_crc.count = 1;
+        node_info.software_image_crc.elements[0] = crc;
+    }
     NodeInfoReader(
         InterfacePtr interface,
         std::string&& name,
