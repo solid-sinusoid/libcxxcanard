@@ -113,6 +113,8 @@ public:
     virtual void can_loop(bool no_tx=false) = 0;
     virtual void process_canard_rx(bool all=true) = 0;
     virtual void update_fdcan_status() {}
+    virtual bool received_after_tick(uint32_t&) const { return false; }
+    virtual void invalidate_rx_receipt() {}
     virtual bool read_frame(CanardFrame*, void* data) = 0;
     virtual int write_frame(const CanardTxQueueItem* ti) = 0;
     void process_canard_tx(bool all = true);

@@ -23,13 +23,34 @@ void G4CAN::process_canard_rx(bool all) {
     // Drain the critical three-frame snapshot first, then one regular frame;
     // a continuously replenished bus must not starve the application loop.
     for (const uint32_t fifo : {FDCAN_RX_FIFO1, FDCAN_RX_FIFO0}) {
+        const auto index = fifo == FDCAN_RX_FIFO1 ? 1U : 0U;
+#if defined(STM32G4)
+        const uint32_t before = TIM2->CNT;
+        const bool wrap = (TIM2->SR & TIM_SR_UIF) != 0U;
+        const uint32_t after = TIM2->CNT;
+        if (wrap || after < before) {
+            rx_empty_known[0] = rx_empty_known[1] = false;
+        }
+#endif
         const uint32_t budget = all && fifo == FDCAN_RX_FIFO1 ? 3U : 1U;
         const auto pending = std::min(HAL_FDCAN_GetRxFifoFillLevel(handler, fifo), budget);
+#if defined(STM32G4)
+        // Sample time before observing empty: arrivals during the check stay newer.
+        if (pending == 0U && !wrap && after >= before) {
+            rx_empty_tick[index] = before;
+            rx_empty_known[index] = true;
+        }
+#endif
         for (uint32_t count = 0; count < pending; ++count) {
             CanardFrame frame;
             uint8_t data[64] = {};
             if (!read_frame_from_fifo(&frame, data, fifo)) break;
+            rx_received_after_tick = rx_empty_tick[index];
+            // A final fragment alone cannot bound the age of a whole transfer.
+            rx_receipt_valid = rx_empty_known[index] && frame.payload_size > 0U &&
+                (data[frame.payload_size - 1U] & 0xe0U) == 0xe0U;
             accept_rx_frame(frame);
+            rx_receipt_valid = false;
             if (!all) return;
         }
     }
@@ -66,6 +87,7 @@ bool G4CAN::read_frame_from_fifo(CanardFrame* rxf, void* data, const uint32_t fi
     }
 
     rxf->extended_can_id = RxHeader.Identifier;
+    rx_hardware_timestamp = RxHeader.RxTimestamp;
     rxf->payload_size = dlc_to_len(RxHeader.DataLength);
     rxf->payload = data;
     return true;

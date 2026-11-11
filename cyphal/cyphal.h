@@ -199,6 +199,8 @@ public:
     }
 
     void process_canard_rx(bool all=true) { provider->process_canard_rx(all); }
+    bool received_after_tick(uint32_t& tick) const { return provider->received_after_tick(tick); }
+    void invalidate_rx_receipt() { provider->invalidate_rx_receipt(); }
     void process_canard_tx(bool all = true) { provider->process_canard_tx(all); }
     void update_fdcan_status() { provider->update_fdcan_status(); }
 

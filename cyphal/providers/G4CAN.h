@@ -16,6 +16,11 @@ public:
 
 private:
     FDCAN_HandleTypeDef* handler;
+    uint32_t rx_hardware_timestamp = 0;
+    uint32_t rx_empty_tick[2]{};
+    bool rx_empty_known[2]{};
+    uint32_t rx_received_after_tick = 0;
+    bool rx_receipt_valid = false;
     bool read_frame_from_fifo(CanardFrame* frame, void* data, uint32_t fifo);
     G4CAN(Handler handler, size_t queue_len, const UtilityConfig& utilities)
         : AbstractCANProvider(CANARD_MTU_CAN_FD, 72, queue_len, utilities), handler(handler){};
@@ -76,6 +81,15 @@ public:
     void update_fdcan_status() override;
     bool read_frame(CanardFrame* frame, void* data) override;
     int write_frame(const CanardTxQueueItem* ti) override;
+    // Valid only during the synchronous listener call; units are TIM2 ticks.
+    bool received_after_tick(uint32_t& tick) const override {
+        tick = rx_received_after_tick;
+        return rx_receipt_valid;
+    }
+    void invalidate_rx_receipt() override {
+        rx_empty_known[0] = rx_empty_known[1] = false;
+        rx_receipt_valid = false;
+    }
 };
 
 HAL_StatusTypeDef apply_filter(

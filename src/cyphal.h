@@ -173,6 +173,7 @@ public:
 extern const std::array<uint32_t, 65> CanardFDCANLengthToDLC;
 extern size_t fdcan_dlc_to_len(uint32_t);
 
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #ifdef __linux__
@@ -283,6 +284,8 @@ public:
     virtual void can_loop(bool no_tx=false) = 0;
     virtual void process_canard_rx(bool all=true) = 0;
     virtual void update_fdcan_status() {}
+    virtual bool received_after_tick(uint32_t&) const { return false; }
+    virtual void invalidate_rx_receipt() {}
     virtual bool read_frame(CanardFrame*, void* data) = 0;
     virtual int write_frame(const CanardTxQueueItem* ti) = 0;
     void process_canard_tx(bool all = true);
@@ -350,6 +353,11 @@ public:
 
 private:
     FDCAN_HandleTypeDef* handler;
+    uint32_t rx_hardware_timestamp = 0;
+    uint32_t rx_empty_tick[2]{};
+    bool rx_empty_known[2]{};
+    uint32_t rx_received_after_tick = 0;
+    bool rx_receipt_valid = false;
     bool read_frame_from_fifo(CanardFrame* frame, void* data, uint32_t fifo);
     G4CAN(Handler handler, size_t queue_len, const UtilityConfig& utilities)
         : AbstractCANProvider(CANARD_MTU_CAN_FD, 72, queue_len, utilities), handler(handler){};
@@ -410,6 +418,15 @@ public:
     void update_fdcan_status() override;
     bool read_frame(CanardFrame* frame, void* data) override;
     int write_frame(const CanardTxQueueItem* ti) override;
+    // Valid only during the synchronous listener call; units are TIM2 ticks.
+    bool received_after_tick(uint32_t& tick) const override {
+        tick = rx_received_after_tick;
+        return rx_receipt_valid;
+    }
+    void invalidate_rx_receipt() override {
+        rx_empty_known[0] = rx_empty_known[1] = false;
+        rx_receipt_valid = false;
+    }
 };
 
 HAL_StatusTypeDef apply_filter(
@@ -638,6 +655,8 @@ public:
     }
 
     void process_canard_rx(bool all=true) { provider->process_canard_rx(all); }
+    bool received_after_tick(uint32_t& tick) const { return provider->received_after_tick(tick); }
+    void invalidate_rx_receipt() { provider->invalidate_rx_receipt(); }
     void process_canard_tx(bool all = true) { provider->process_canard_tx(all); }
     void update_fdcan_status() { provider->update_fdcan_status(); }
 
