@@ -21,6 +21,13 @@ private:
     bool rx_empty_known[2]{};
     uint32_t rx_received_after_tick = 0;
     bool rx_receipt_valid = false;
+#if defined(STM32G4)
+    uint64_t fifo1_epoch_us = 0;
+    uint32_t fifo1_epoch_tick = 0;
+    uint32_t rx_sof_tick = 0;
+    bool fifo1_epoch_known = false;
+    bool rx_sof_valid = false;
+#endif
     bool read_frame_from_fifo(CanardFrame* frame, void* data, uint32_t fifo);
     G4CAN(Handler handler, size_t queue_len, const UtilityConfig& utilities)
         : AbstractCANProvider(CANARD_MTU_CAN_FD, 72, queue_len, utilities), handler(handler){};
@@ -82,13 +89,25 @@ public:
     bool read_frame(CanardFrame* frame, void* data) override;
     int write_frame(const CanardTxQueueItem* ti) override;
     // Valid only during the synchronous listener call; units are TIM2 ticks.
-    bool received_after_tick(uint32_t& tick) const override {
+    bool received_after_tick(uint32_t& tick, bool hardware = false) const override {
+        if (hardware) {
+#if defined(STM32G4)
+            tick = rx_sof_tick;
+            return rx_sof_valid;
+#else
+            return false;
+#endif
+        }
         tick = rx_received_after_tick;
         return rx_receipt_valid;
     }
     void invalidate_rx_receipt() override {
         rx_empty_known[0] = rx_empty_known[1] = false;
         rx_receipt_valid = false;
+#if defined(STM32G4)
+        fifo1_epoch_known = false;
+        rx_sof_valid = false;
+#endif
     }
 };
 

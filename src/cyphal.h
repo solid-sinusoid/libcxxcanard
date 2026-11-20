@@ -284,7 +284,7 @@ public:
     virtual void can_loop(bool no_tx=false) = 0;
     virtual void process_canard_rx(bool all=true) = 0;
     virtual void update_fdcan_status() {}
-    virtual bool received_after_tick(uint32_t&) const { return false; }
+    virtual bool received_after_tick(uint32_t&, bool = false) const { return false; }
     virtual void invalidate_rx_receipt() {}
     virtual bool read_frame(CanardFrame*, void* data) = 0;
     virtual int write_frame(const CanardTxQueueItem* ti) = 0;
@@ -358,6 +358,13 @@ private:
     bool rx_empty_known[2]{};
     uint32_t rx_received_after_tick = 0;
     bool rx_receipt_valid = false;
+#if defined(STM32G4)
+    uint64_t fifo1_epoch_us = 0;
+    uint32_t fifo1_epoch_tick = 0;
+    uint32_t rx_sof_tick = 0;
+    bool fifo1_epoch_known = false;
+    bool rx_sof_valid = false;
+#endif
     bool read_frame_from_fifo(CanardFrame* frame, void* data, uint32_t fifo);
     G4CAN(Handler handler, size_t queue_len, const UtilityConfig& utilities)
         : AbstractCANProvider(CANARD_MTU_CAN_FD, 72, queue_len, utilities), handler(handler){};
@@ -419,13 +426,25 @@ public:
     bool read_frame(CanardFrame* frame, void* data) override;
     int write_frame(const CanardTxQueueItem* ti) override;
     // Valid only during the synchronous listener call; units are TIM2 ticks.
-    bool received_after_tick(uint32_t& tick) const override {
+    bool received_after_tick(uint32_t& tick, bool hardware = false) const override {
+        if (hardware) {
+#if defined(STM32G4)
+            tick = rx_sof_tick;
+            return rx_sof_valid;
+#else
+            return false;
+#endif
+        }
         tick = rx_received_after_tick;
         return rx_receipt_valid;
     }
     void invalidate_rx_receipt() override {
         rx_empty_known[0] = rx_empty_known[1] = false;
         rx_receipt_valid = false;
+#if defined(STM32G4)
+        fifo1_epoch_known = false;
+        rx_sof_valid = false;
+#endif
     }
 };
 
@@ -655,7 +674,9 @@ public:
     }
 
     void process_canard_rx(bool all=true) { provider->process_canard_rx(all); }
-    bool received_after_tick(uint32_t& tick) const { return provider->received_after_tick(tick); }
+    bool received_after_tick(uint32_t& tick, bool hardware = false) const {
+        return provider->received_after_tick(tick, hardware);
+    }
     void invalidate_rx_receipt() { provider->invalidate_rx_receipt(); }
     void process_canard_tx(bool all = true) { provider->process_canard_tx(all); }
     void update_fdcan_status() { provider->update_fdcan_status(); }
@@ -1450,7 +1471,8 @@ template<size_t QUEUE_SIZE, millis_t DELAY_ON_ERROR, size_t REGISTERS_COUNT>
 class EmbeddedCyphal: public CyphalInterface {
 protected:
     FDCAN_HandleTypeDef* hfdcan;
-    std::byte cyphal_bss_buffer[sizeof(G4CAN) + sizeof(O1Allocator)] __attribute__((aligned(4)));
+    static_assert(sizeof(O1Allocator) % alignof(G4CAN) == 0);
+    alignas(G4CAN) std::byte cyphal_bss_buffer[sizeof(G4CAN) + sizeof(O1Allocator)];
     bool _is_cyphal_on = false;
     uint8_t _health_status = uavcan_node_Health_1_0_NOMINAL;
     uint8_t _mode = uavcan_node_Mode_1_0_INITIALIZATION;

@@ -337,6 +337,16 @@ void G4CAN::can_loop(bool no_tx) {
 }
 
 void G4CAN::process_canard_rx(bool all) {
+#if defined(STM32G4)
+    // The longest supported FD frame at >=62.5 kbit/s fits in <20 ms
+    // even with no BRS and generous stuffing/clock-domain allowance.
+    constexpr uint32_t tick_us = 100U;
+    constexpr uint32_t frame_margin_ticks = 20'000U / tick_us;
+    constexpr uint32_t epoch_limit_ticks = UINT16_MAX - 1U - frame_margin_ticks;
+    const bool hardware = (handler->Instance->TSCC & FDCAN_TSCC_TSS) == FDCAN_TIMESTAMP_EXTERNAL &&
+        (TIM3->CR1 & TIM_CR1_CEN) != 0U;
+    if (!hardware) fifo1_epoch_known = false;
+#endif
     // Drain the critical three-frame snapshot first, then one regular frame;
     // a continuously replenished bus must not starve the application loop.
     for (const uint32_t fifo : {FDCAN_RX_FIFO1, FDCAN_RX_FIFO0}) {
@@ -345,8 +355,9 @@ void G4CAN::process_canard_rx(bool all) {
         const uint32_t before = TIM2->CNT;
         const bool wrap = (TIM2->SR & TIM_SR_UIF) != 0U;
         const uint32_t after = TIM2->CNT;
+        const uint64_t epoch_us = hardware && index == 1U ? utilities.micros_64() : 0;
         if (wrap || after < before) {
-            rx_empty_known[0] = rx_empty_known[1] = false;
+            invalidate_rx_receipt();
         }
 #endif
         const uint32_t budget = all && fifo == FDCAN_RX_FIFO1 ? 3U : 1U;
@@ -356,6 +367,11 @@ void G4CAN::process_canard_rx(bool all) {
         if (pending == 0U && !wrap && after >= before) {
             rx_empty_tick[index] = before;
             rx_empty_known[index] = true;
+            if (hardware && index == 1U) {
+                fifo1_epoch_tick = before;
+                fifo1_epoch_us = epoch_us;
+                fifo1_epoch_known = true;
+            }
         }
 #endif
         for (uint32_t count = 0; count < pending; ++count) {
@@ -366,8 +382,50 @@ void G4CAN::process_canard_rx(bool all) {
             // A final fragment alone cannot bound the age of a whole transfer.
             rx_receipt_valid = rx_empty_known[index] && frame.payload_size > 0U &&
                 (data[frame.payload_size - 1U] & 0xe0U) == 0xe0U;
+#if defined(STM32G4)
+            if (hardware && index == 1U && rx_receipt_valid && fifo1_epoch_known) {
+                const uint32_t t2 = TIM2->CNT;
+                const uint32_t age = static_cast<uint16_t>(TIM3->CNT - rx_hardware_timestamp) + 1U;
+                const uint32_t span = t2 - fifo1_epoch_tick;
+                const uint64_t us = utilities.micros_64();
+                // Require a unique 16-bit epoch; a frame can be on the
+                // wire when FIFO reads empty. The TIM2 check also covers
+                // a lost TIM7 epoch while interrupts were masked.
+                if ((TIM2->SR & TIM_SR_UIF) == 0U && TIM2->CNT >= t2 &&
+                    span < epoch_limit_ticks && us - fifo1_epoch_us < epoch_limit_ticks * tick_us &&
+                    age <= span + frame_margin_ticks) {
+                    rx_sof_tick = t2 - age;
+                    rx_sof_valid = true;
+                    // FIFO1 is ordered. The previous SOF can bound the
+                    // next frame even if the queue never drains.
+                    fifo1_epoch_tick = rx_sof_tick;
+                    const uint32_t elapsed_us = (age + 1U) * tick_us;
+                    fifo1_epoch_us = epoch_us > elapsed_us ? epoch_us - elapsed_us : 0;
+                }
+            }
+            if (count + 1U == pending) {
+                // Date future arrivals, not frames already removed from the FIFO.
+                const uint32_t drained_tick = TIM2->CNT;
+                const uint64_t drained_us = hardware && index == 1U ? utilities.micros_64() : 0;
+                const bool drained = HAL_FDCAN_GetRxFifoFillLevel(handler, fifo) == 0U;
+                if ((TIM2->SR & TIM_SR_UIF) != 0U || drained_tick < after || TIM2->CNT < drained_tick) {
+                    invalidate_rx_receipt();
+                } else if (drained) {
+                    rx_empty_tick[index] = drained_tick;
+                    rx_empty_known[index] = true;
+                    if (hardware && index == 1U) {
+                        fifo1_epoch_tick = drained_tick;
+                        fifo1_epoch_us = drained_us;
+                        fifo1_epoch_known = true;
+                    }
+                }
+            }
+#endif
             accept_rx_frame(frame);
             rx_receipt_valid = false;
+#if defined(STM32G4)
+            rx_sof_valid = false;
+#endif
             if (!all) return;
         }
     }

@@ -39,7 +39,8 @@ template<size_t QUEUE_SIZE, millis_t DELAY_ON_ERROR, size_t REGISTERS_COUNT>
 class EmbeddedCyphal: public CyphalInterface {
 protected:
     FDCAN_HandleTypeDef* hfdcan;
-    std::byte cyphal_bss_buffer[sizeof(G4CAN) + sizeof(O1Allocator)] __attribute__((aligned(4)));
+    static_assert(sizeof(O1Allocator) % alignof(G4CAN) == 0);
+    alignas(G4CAN) std::byte cyphal_bss_buffer[sizeof(G4CAN) + sizeof(O1Allocator)];
     bool _is_cyphal_on = false;
     uint8_t _health_status = uavcan_node_Health_1_0_NOMINAL;
     uint8_t _mode = uavcan_node_Mode_1_0_INITIALIZATION;
